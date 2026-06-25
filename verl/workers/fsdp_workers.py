@@ -864,16 +864,15 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             
             mean_prm, max_prm, min_prm = None, None, None
             if "rm_scores" in data.batch:
-                # 过滤掉所有的 0 Padding，只提取真正被打分的 Token
                 real_scores = data.batch["rm_scores"][data.batch["rm_scores"] != 0]
                 if real_scores.numel() > 0:
                     mean_prm = real_scores.mean().item()
                     max_prm = real_scores.max().item()
                     min_prm = real_scores.min().item()
                 elif self.rank == 0:
-                    print("⚠️ [SwanLab 注入警告] rm_scores 存在，但水分挤干后全空了（全是0）！")
+                    print("rm_scores 存在但全空")
             elif self.rank == 0:
-                print("⚠️ [SwanLab 注入警告] data.batch 里根本没有 rm_scores 键！")
+                print("没有 rm_scores")
 
             # perform training
             with Timer(name="update_policy", logger=None) as timer:
@@ -892,16 +891,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             metrics["actor/lr"] = lr
             self.actor_lr_scheduler.step()
 
-            # ==========================================================
-            # 🚀 注入真实的 PRM 动态分数到 SwanLab
-            # ==========================================================
             if mean_prm is not None:
                 metrics["actor/mean_prm_score"] = mean_prm
                 metrics["actor/max_prm_score"] = max_prm
                 metrics["actor/min_prm_score"] = min_prm
                 if getattr(self, "rank", 0) == 0:
-                    print(f"✅ [SwanLab 注入成功] 成功将 mean_prm = {mean_prm:.4f} 写入 metrics 字典！等待推流...")
-            # ==========================================================
+                    print(f"将 mean_prm = {mean_prm:.4f} 写入 metrics 字典")
 
             # TODO: here, we should return all metrics
             output = DataProto(meta_info={"metrics": metrics})
@@ -1795,106 +1790,7 @@ class RewardModelWorker(Worker, DistProfilerExtension):
 
         return token_level_scores
 
-    # def _switch_chat_template(self, data: DataProto):
-    #     src_max_length = data.batch["attention_mask"].shape[-1]
-
-    #     src_tokenizer = self.input_tokenizer
-    #     target_tokenizer = self.tokenizer
-
-    #     rm_input_ids = []
-    #     rm_attention_mask = []
-    #     # 1. 获取字典里所有真实存在的列名
-    #     available_keys = list(data.non_tensor_batch.keys())
-        
-    #     # 2. 依次按优先级去尝试匹配可能的 prompt 键名
-    #     prompt_key = None
-    #     for k in ["raw_prompt", "prompt", "source_prompt", "prompts", "question"]:
-    #         if k in available_keys:
-    #             prompt_key = k
-    #             break
-                
-    #     # 3. 如果还是找不到，直接把到底有什么键打印出来，我们就不瞎猜了！
-    #     if prompt_key is None:
-    #         raise KeyError(f"彻底找不到 prompt 列！当前字典里实际存在的列只有: {available_keys}")
-        
-    #     # for i in range(data.batch.batch_size[0]):
-    #     #     if not isinstance(data.non_tensor_batch[prompt_key][i], list | np.ndarray):
-    #     #         raise TypeError(
-    #     #             f"{prompt_key} must be a list or numpy array, got {type(data.non_tensor_batch[prompt_key][i])}"
-    #     #         )
-    #     for i in range(data.batch.batch_size[0]):
-    #         # 获取当前这一条数据的原始 Prompt
-    #         raw_item = data.non_tensor_batch[prompt_key][i]
-            
-    #         # --- 核心修复逻辑：自动识别并转换类型 ---
-    #         if isinstance(raw_item, str):
-    #             # 如果是纯字符串，自动包装成列表
-    #             chat = [{"role": "user", "content": raw_item}]
-    #         elif isinstance(raw_item, (list, np.ndarray)):
-    #             # 如果已经是列表或数组，直接转换
-    #             tmp_chat = list(raw_item)
-    #             if len(tmp_chat) > 0 and isinstance(tmp_chat[0], str):
-    #                 chat = [{"role": "user", "content": tmp_chat[0]}]
-    #             else:
-    #                 chat = [item.copy() for item in tmp_chat] if isinstance(tmp_chat[0], dict) else tmp_chat
-    #         else:
-    #             # 只有遇到完全无法处理的类型（如 None 或数字）才报错
-    #             raise TypeError(
-    #                 f"{prompt_key} 格式错误！预期 str, list 或 ndarray, 但实际拿到的是 {type(raw_item)}。"
-    #                 f"具体内容为: {raw_item}"
-    #             )
-    #         # # extract raw prompt
-    #         # chat: list = list(data.non_tensor_batch[prompt_key][i])
-
-    #         # extract response
-    #         response_ids = data.batch["responses"][i]
-    #         response_length = response_ids.shape[-1]
-    #         valid_response_length = data.batch["attention_mask"][i][-response_length:].sum()
-    #         valid_response_ids = response_ids[:valid_response_length]
-
-    #         # decode
-    #         response = src_tokenizer.decode(valid_response_ids)
-    #         # remove bos and eos
-    #         response = response.replace(src_tokenizer.eos_token, "")
-
-    #         chat.append({"role": "assistant", "content": response})
-
-    #         prompt_with_chat_template = target_tokenizer.apply_chat_template(
-    #             chat, add_generation_prompt=False, tokenize=False
-    #         )
-    #         if self.rank == 0 and i == 0:
-    #             # for debugging purpose
-    #             print(f"Switch template. chat: {prompt_with_chat_template}")
-
-    #         # the maximum length is actually determined by the reward model itself
-    #         max_length = self.config.get("max_length", src_max_length)
-    #         if max_length is None:
-    #             max_length = src_max_length
-
-    #         model_inputs = target_tokenizer(prompt_with_chat_template, return_tensors="pt", add_special_tokens=False)
-    #         input_ids, attention_mask = verl_F.postprocess_data(
-    #             input_ids=model_inputs["input_ids"],
-    #             attention_mask=model_inputs["attention_mask"],
-    #             max_length=max_length,
-    #             pad_token_id=target_tokenizer.pad_token_id,
-    #             left_pad=False,  # right padding
-    #             truncation=self.config.get("truncation", "right"),
-    #         )  # truncate from the right
-
-    #         rm_input_ids.append(input_ids)
-    #         rm_attention_mask.append(attention_mask)
-
-    #     rm_input_ids = torch.cat(rm_input_ids, dim=0)
-    #     rm_attention_mask = torch.cat(rm_attention_mask, dim=0)
-
-    #     rm_position_ids = compute_position_id_with_mask(rm_attention_mask)
-
-    #     rm_inputs = {"input_ids": rm_input_ids, "attention_mask": rm_attention_mask, "position_ids": rm_position_ids}
-
-    #     return DataProto.from_dict(rm_inputs)
-
     def _switch_chat_template(self, data: DataProto):
-        """重写 2：直接从张量解码 Prompt，动态注入 <extra_0> 标签，彻底摆脱 KeyError"""
         src_max_length = data.batch["attention_mask"].shape[-1]
         src_tokenizer = self.input_tokenizer if hasattr(self, 'input_tokenizer') else self.tokenizer
         target_tokenizer = self.tokenizer
@@ -1903,14 +1799,13 @@ class RewardModelWorker(Worker, DistProfilerExtension):
         rm_attention_mask = []
 
         for i in range(data.batch.batch_size[0]):
-            # 🚀 1. 直接从张量解码 Prompt，不再依赖 non_tensor_batch！
             prompt_ids = data.batch["prompts"][i]
             p_len = prompt_ids.shape[-1]
             v_p_len = data.batch["attention_mask"][i, :p_len].sum().item()
             # 提取真实有效的 prompt token 并解码
             prompt_str = src_tokenizer.decode(prompt_ids[-v_p_len:], skip_special_tokens=True)
 
-            # 2. 解码 Response
+            #  解码 Response
             response_ids = data.batch["responses"][i]
             response_length = response_ids.shape[-1]
             valid_response_length = data.batch["attention_mask"][i][-response_length:].sum()
@@ -1919,13 +1814,12 @@ class RewardModelWorker(Worker, DistProfilerExtension):
             response_str = src_tokenizer.decode(valid_response_ids, skip_special_tokens=True)
             response_str = response_str.replace(src_tokenizer.eos_token, "")
             
-            # 3. 注入 <extra_0>
+            # 注入 <extra_0>
             steps =[s.strip() for s in response_str.split("\n\n") if s.strip()]
             if len(steps) < 2:
                 steps =[s.strip() for s in response_str.replace(". ", ".\n\n").split("\n\n") if s.strip()]
             assistant_content = "<extra_0>".join(steps) + "<extra_0>" if steps else ""
 
-            # 🚀 4. 手动组装纯净的 Chat 模板，彻底无视原来的结构
             chat =[
                 {"role": "system", "content": "Please reason step by step, and put your final answer within \\boxed{}."},
                 {"role": "user", "content": prompt_str},

@@ -28,7 +28,7 @@ class PRMScorer:
     def __init__(
         self,
         model_name: str,
-        device: torch.device,  # 🚀 必须由外部框架传入具体的 device
+        device: torch.device, 
         system_prompt: str = "Please reason step by step, and put your final answer within \\boxed{}.",
         aggregation_method: str = "log_mean_prob",
         clip_epsilon: float = 1e-4,
@@ -46,7 +46,6 @@ class PRMScorer:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # 🚀 强行绑定 device，杜绝 device_map="auto"
         self.model = AutoModel.from_pretrained(
             self.model_name,
             torch_dtype=torch.bfloat16,

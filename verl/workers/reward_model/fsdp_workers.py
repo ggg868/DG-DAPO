@@ -872,9 +872,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                     max_prm = real_scores.max().item()
                     min_prm = real_scores.min().item()
                 elif self.rank == 0:
-                    print("⚠️ [SwanLab 注入警告] rm_scores 存在，但全是 0！")
+                    print("rm_scores 存在，但全是 0！")
             elif self.rank == 0:
-                print("⚠️ [SwanLab 注入警告] data.batch 里根本没有 rm_scores 键！")
+                print("data.batch 里没有 rm_scores 键")
 
 
             
@@ -895,17 +895,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             metrics["actor/lr"] = lr
             self.actor_lr_scheduler.step()
 
-            # ==========================================================
-            # 🚀 注入真实的 PRM 动态分数到 SwanLab
-            # ==========================================================
             if mean_prm is not None:
                 metrics["actor/mean_prm_score"] = mean_prm
                 metrics["actor/max_prm_score"] = max_prm
                 metrics["actor/min_prm_score"] = min_prm
                 if self.rank == 0:
-                    print(f"✅ [SwanLab 注入成功] 成功将 mean_prm = {mean_prm:.4f} 写入 metrics 字典！等待推流...")
-            # ==========================================================
-
+                    print(f" 将 mean_prm = {mean_prm:.4f} 写入 metrics 字典")
             # TODO: here, we should return all metrics
             output = DataProto(meta_info={"metrics": metrics})
 
@@ -1906,14 +1901,13 @@ class RewardModelWorker(Worker, DistProfilerExtension):
         rm_attention_mask = []
 
         for i in range(data.batch.batch_size[0]):
-            # 🚀 1. 直接从张量解码 Prompt，不再依赖 non_tensor_batch！
             prompt_ids = data.batch["prompts"][i]
             p_len = prompt_ids.shape[-1]
             v_p_len = data.batch["attention_mask"][i, :p_len].sum().item()
             # 提取真实有效的 prompt token 并解码
             prompt_str = src_tokenizer.decode(prompt_ids[-v_p_len:], skip_special_tokens=True)
 
-            # 2. 解码 Response
+            # 解码 Response
             response_ids = data.batch["responses"][i]
             response_length = response_ids.shape[-1]
             valid_response_length = data.batch["attention_mask"][i][-response_length:].sum()
@@ -1922,13 +1916,12 @@ class RewardModelWorker(Worker, DistProfilerExtension):
             response_str = src_tokenizer.decode(valid_response_ids, skip_special_tokens=True)
             response_str = response_str.replace(src_tokenizer.eos_token, "")
             
-            # 3. 注入 <extra_0>
+            # 注入 <extra_0>
             steps =[s.strip() for s in response_str.split("\n\n") if s.strip()]
             if len(steps) < 2:
                 steps =[s.strip() for s in response_str.replace(". ", ".\n\n").split("\n\n") if s.strip()]
             assistant_content = "<extra_0>".join(steps) + "<extra_0>" if steps else ""
 
-            # 🚀 4. 手动组装纯净的 Chat 模板，彻底无视原来的结构
             chat =[
                 {"role": "system", "content": "Please reason step by step, and put your final answer within \\boxed{}."},
                 {"role": "user", "content": prompt_str},
