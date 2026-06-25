@@ -120,65 +120,6 @@ class QwenPRMFSDPWorker(RewardModelWorker):
             fsdp2_load_full_state_dict(reward_module, full_state, self.device_mesh, cpu_offload)
         return reward_module
 
-    # def _switch_chat_template(self, data: DataProto):
-    #     """在转换模板时，动态注入 <extra_0> 标签"""
-    #     src_max_length = data.batch["attention_mask"].shape[-1]
-    #     src_tokenizer = self.input_tokenizer
-    #     target_tokenizer = self.tokenizer
-
-    #     rm_input_ids =[]
-    #     rm_attention_mask = []
-
-    #     for i in range(data.batch.batch_size[0]):
-    #         chat: list = list(data.non_tensor_batch["raw_prompt"][i])
-
-    #         response_ids = data.batch["responses"][i]
-    #         response_length = response_ids.shape[-1]
-    #         valid_response_length = data.batch["attention_mask"][i][-response_length:].sum()
-    #         valid_response_ids = response_ids[:valid_response_length]
-
-    #         response = src_tokenizer.decode(valid_response_ids)
-    #         response = response.replace(src_tokenizer.eos_token, "")
-            
-    #         steps = [s.strip() for s in response.split("\n\n") if s.strip()]
-    #         # 容错防御：如果模型完全没分步（一长段到底），才退化为按句号强行切分
-    #         if len(steps) < 2:
-    #             steps = [s.strip() for s in response.replace(". ", ".\n\n").split("\n\n") if s.strip()]
-    #         assistant_content = "<extra_0>".join(steps) + "<extra_0>" if steps else ""
-
-    #         # 强行纠正系统提示词
-    #         # if chat[0]["role"] == "system":
-    #         #     chat[0]["content"] = "Please reason step by step, and put your final answer within \\boxed{}."
-    #         if len(chat) > 0 and chat[0]["role"] == "system":
-    #             # 创建一个全新的字典，覆盖原来的引用
-    #             chat[0] = {**chat[0], "content": "Please reason step by step, and put your final answer within \\boxed{}."}
-    #         else:
-    #             chat.insert(0, {"role": "system", "content": "Please reason step by step, and put your final answer within \\boxed{}."})
-
-    #         chat.append({"role": "assistant", "content": assistant_content})
-
-    #         prompt_with_chat_template = target_tokenizer.apply_chat_template(chat, add_generation_prompt=False, tokenize=False)
-    #         max_length = self.config.get("max_length", src_max_length) or src_max_length
-
-    #         model_inputs = target_tokenizer(prompt_with_chat_template, return_tensors="pt", add_special_tokens=False)
-    #         input_ids, attention_mask = verl_F.postprocess_data(
-    #             input_ids=model_inputs["input_ids"],
-    #             attention_mask=model_inputs["attention_mask"],
-    #             max_length=max_length,
-    #             pad_token_id=target_tokenizer.pad_token_id,
-    #             left_pad=False,
-    #             truncation=self.config.get("truncation", "right"),
-    #         )
-
-    #         rm_input_ids.append(input_ids)
-    #         rm_attention_mask.append(attention_mask)
-
-    #     rm_input_ids = torch.cat(rm_input_ids, dim=0)
-    #     rm_attention_mask = torch.cat(rm_attention_mask, dim=0)
-    #     rm_position_ids = compute_position_id_with_mask(rm_attention_mask)
-
-    #     rm_inputs = {"input_ids": rm_input_ids, "attention_mask": rm_attention_mask, "position_ids": rm_position_ids}
-    #     return DataProto.from_dict(rm_inputs)
     
     def _switch_chat_template(self, data: DataProto):
         """重写：直接从张量解码 Prompt，动态注入 <extra_0> 标签，彻底摆脱 KeyError"""
@@ -190,13 +131,6 @@ class QwenPRMFSDPWorker(RewardModelWorker):
         rm_attention_mask = []
 
         for i in range(data.batch.batch_size[0]):
-            # 🚀 1. 直接从张量解码 Prompt，不再依赖 non_tensor_batch！
-            # prompt_ids = data.batch["prompts"][i]
-            # p_len = prompt_ids.shape[-1]
-            # v_p_len = data.batch["attention_mask"][i, :p_len].sum().item()
-            # # 提取真实有效的 prompt token 并解码
-            # prompt_str = src_tokenizer.decode(prompt_ids[-v_p_len:], skip_special_tokens=True)
-            # 🚀 1. 动态安全获取纯净的 Prompt，拒绝 Tensor 反解码造成的格式污染！
             prompt_str = ""
             available_keys = list(data.non_tensor_batch.keys())
             
@@ -213,10 +147,9 @@ class QwenPRMFSDPWorker(RewardModelWorker):
                         prompt_str = raw_item["content"]
                     break
             
-            # 终极兜底，哪怕天塌下来模型也能看到正常的文字
             if not prompt_str:
                 prompt_str = "Please solve the problem step by step."
-            # 2. 解码 Response
+            # 解码 Response
             response_ids = data.batch["responses"][i]
             response_length = response_ids.shape[-1]
             valid_response_length = data.batch["attention_mask"][i][-response_length:].sum()
@@ -225,13 +158,13 @@ class QwenPRMFSDPWorker(RewardModelWorker):
             response_str = src_tokenizer.decode(valid_response_ids, skip_special_tokens=True)
             response_str = response_str.replace(src_tokenizer.eos_token, "")
             
-            # 3. 注入 <extra_0>
+            # 注入 <extra_0>
             steps = [s.strip() for s in response_str.split("\n\n") if s.strip()]
             if len(steps) < 2:
                 steps = [s.strip() for s in response_str.replace(". ", ".\n\n").split("\n\n") if s.strip()]
             assistant_content = "<extra_0>".join(steps) + "<extra_0>" if steps else ""
 
-            # 🚀 4. 手动组装纯净的 Chat 模板，彻底无视原来的结构
+            # 手动组装纯净的 Chat 模板，彻底无视原来的结构
             chat = [
                 {"role": "system", "content": "Please reason step by step, and put your final answer within \\boxed{}."},
                 {"role": "user", "content": prompt_str},
@@ -319,28 +252,11 @@ class QwenPRMFSDPWorker(RewardModelWorker):
                 elif isinstance(output, (list, tuple)):
                     logits = output[0]
                 else:
-                    # 最后的保底手段，尝试从对象中直接抓取
                     logits = getattr(output, 'last_hidden_state', None)
 
             probabilities = F.softmax(logits, dim=-1)
             token_masks = (input_ids == getattr(self, "step_sep_id", 151646)) 
 
-            # trajectory_scores =[]
-            # for i in range(batch_size):
-            #     step_probs = probabilities[i][token_masks[i]]
-            #     if step_probs.size(0) > 0:
-            #         good_probs = step_probs[:, 1].cpu().numpy()
-            #         arr = np.clip(good_probs, 1e-4, 1.0)
-            #         final_score = float(np.mean(np.log(arr)))
-            #         final_score = max(final_score, -50.0)
-            #     else:
-            #         # 空步骤重罚，直接在 GPU 上生成标量
-            #         final_score = torch.tensor(-50.0, dtype=torch.float32, device=probabilities.device)
-            #     trajectory_scores.append(final_score)
-            
-            # # 返回形状为 (B,) 的标量，给外层的 _expand_to_token_level 处理
-            # # 外层会自动把这个标量放到句子的最后一个 Token 上！
-            # return torch.tensor(trajectory_scores, dtype=torch.float32, device=input_ids.device)
             
             mask_float = token_masks.float()
             good_probs = probabilities[:, :, 1]
@@ -357,44 +273,18 @@ class QwenPRMFSDPWorker(RewardModelWorker):
             )
             final_scores = torch.clamp(final_scores, min=-50.0)
 
-            # --- 🚀 [PRM 实时监控日志] ---
-            # 只有在第一张卡的第一个微批次打印，防止刷屏
             if self.rank == 0:
-                # 随机抓取当前 batch 中的第 0 条数据看一眼
                 sample_idx = 0
                 sample_valid_count = int(valid_counts[sample_idx].item())
                 sample_final_score = final_scores[sample_idx].item()
-                print(f"✅ 当前 Sample 抓取到步骤标记 (<extra_0>) 数量: {sample_valid_count}")
+                print(f"当前 Sample 抓取到步骤标记 (<extra_0>) 数量: {sample_valid_count}")
                 # 如果抓到了分数，打印出来看一眼趋势
                 if sample_valid_count > 0:
-                    print(f"📝 对数几何平均分 (Log-Mean Score): {sample_final_score:.4f}")
+                    print(f"对数几何平均分 (Log-Mean Score): {sample_final_score:.4f}")
                     # 转换回概率值直观感受一下（Exp后）
-                    print(f"📈 换算为原始平均概率: {np.exp(sample_final_score):.2%}")
+                    print(f"原始平均概率: {np.exp(sample_final_score):.2%}")
                 else:
-                    print("⚠️ 警告：当前样本未抓取到任何有效步骤，请检查 Chat Template 是否注入成功！")
-                
-                # 打印整个 Batch 的统计信息
-                print(f"🌐 Batch 统计: 均值={final_scores.mean():.4f}, 最大={final_scores.max():.4f}, 最小={final_scores.min():.4f}")
-                print("🔍" * 30 + "\n")
-            # ------------------------# --- 🚀 [PRM 深度 X光扫描日志] ---
-            # 只有在第一张卡的第一个微批次打印，防止刷屏
-            # if self.rank == 0 and not hasattr(self, '_already_printed_prm_xray'):
-            #     sample_idx = 0
-            #     sample_valid_count = int(valid_counts[sample_idx].item())
-            #     sample_final_score = final_scores[sample_idx].item()
-                
-            #     if sample_valid_count > 0:
-            #         print(f"📉 对数几何平均分: {sample_final_score:.4f} (概率: {np.exp(sample_final_score):.2%})")
-            #         # 扒出第一个有效步骤的原始 Logits
-            #         try:
-            #             first_step_idx = (token_masks[sample_idx]).nonzero(as_tuple=True)[0][0]
-            #             raw_logit = logits[sample_idx, first_step_idx].tolist()
-            #             print(f"🧮 [第 1 步的原始 Logits] 类别 0 (Bad): {raw_logit[0]:.4f}, 类别 1 (Good): {raw_logit[1]:.4f}")
-            #         except Exception as e:
-            #             pass
-                
-            #     print(f"🌐 Batch 统计: 均值={final_scores.mean():.4f}, 最大={final_scores.max():.4f}, 最小={final_scores.min():.4f}")
-                # self._already_printed_prm_xray = True
-            # ------------------------------
+                    print("当前样本未抓取到任何有效步骤")
+                print(f"均值={final_scores.mean():.4f}, 最大={final_scores.max():.4f}, 最小={final_scores.min():.4f}")
 
             return final_scores.to(torch.float32)
